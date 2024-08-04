@@ -1,65 +1,46 @@
 'use server';
 
-import { BotCard, BotMessage } from '@ai-rsc/components/llm-crypto/message';
-import { Price } from '@ai-rsc/components/llm-crypto/price';
-import { PriceSkeleton } from '@ai-rsc/components/llm-crypto/price-skeleton';
-import { Stats } from '@ai-rsc/components/llm-crypto/stats';
-import { StatsSkeleton } from '@ai-rsc/components/llm-crypto/stats-skeleton';
-import { env } from '@ai-rsc/env.mjs';
+import { BotCard, BotMessage } from '@ai-rsc/components/llm-grocery/message';
+import { Price } from '@ai-rsc/components/llm-grocery/price';
+import { PriceSkeleton } from '@ai-rsc/components/llm-grocery/price-skeleton';
+import { ProductFacts } from '@ai-rsc/components/llm-grocery/product-facts';
+import { ProductFactsSkeleton } from '@ai-rsc/components/llm-grocery/product-facts-skeleton';
 import { openai } from '@ai-sdk/openai';
 import type { CoreMessage, ToolInvocation } from 'ai';
 import { createAI, getMutableAIState, streamUI } from 'ai/rsc';
-import { MainClient } from 'binance';
 import { Loader2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { z } from 'zod';
 
+// Sleep function to simulate delay
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const binance = new MainClient({
-  api_key: env.BINANCE_API_KEY,
-  api_secret: env.BINANCE_API_SECRET,
-});
-
 /* 
-  !-- The first implication of user interfaces being generative is that they are not deterministic in nature.
-  !-- This is because they depend on the generation output by the model. Since these generations are probabilistic 
-  !-- in nature, it is possible for every user query to result in a different user interface being generated.
+  !-- The assistant is designed to help users with grocery shopping by retrieving product prices and facts.
+  !-- It uses the Open Food Facts API to provide detailed information about various products.
+  !-- The assistant can also chat with users for a more interactive experience.
 
-  !-- Users expect their experience using your application to be predictable, so non-deterministic user interfaces
-  !-- can sound like a bad idea at first. However, one way language models can be set up to limit their generations
-  !-- to a particular set of outputs is to use their ability to call functions, now called tool calling.
-
-  !-- When language models are provided with a set of function definitions, and instructed that it can choose to 
-  !-- execute any of them based on user query, it does either one of the following two things:
-
-  !-- 1. Execute a function that is most relevant to the user query.
-  !-- 2. Not execute any function if the user query is out of bounds the set of functions available to them.
-
-  !-- As you can see in the content variable below, we set the initial message so that the LLM understand what to do.
-  !-- We define a few tool names which allows the LLM to decide whether or not to call the function. Then, we ensure
-  !-- that the LLM understands that if the function is out of bounds of the set of functions available to them, they
-  !-- should respond that they are a demo and cannot do that. Besides that, the LLM can chat with users as normal.
+  !-- The AI model can call functions based on user queries. If the query is related to product prices or facts,
+  !-- it will call the relevant function. If the request is outside the available options, it will respond accordingly.
 */
 
-
 const content = `\
-You are a crypto bot and you can help users get the prices of cryptocurrencies.
+You are a grocery shopping assistant. You can help users get the prices of grocery items and provide facts about products.
 
-Messages inside [] means that it's a UI element or a user event. For example:
-- "[Price of BTC = 69000]" means that the interface of the cryptocurrency price of BTC is shown to the user.
+Messages inside [] indicate a UI element or a user event. For example:
+- "[Price of Apple = $1.20]" means that the price of an apple is shown to the user.
+- "[Facts about Apple]" means that product information about the apple is displayed to the user.
 
-If the user wants the price, call \`get_crypto_price\` to show the price.
-If the user wants the market cap or other stats of a given cryptocurrency, call \`get_crypto_stats\` to show the stats.
-If the user wants a stock price, it is an impossible task, so you should respond that you are a demo and cannot do that.
-If the user wants to do anything else, it is an impossible task, so you should respond that you are a demo and cannot do that.
+If the user wants the price of a product, call \`get_product_price\` to show the price.
+If the user wants facts about a product, call \`get_product_facts\` to show the information.
+If the user asks for something unrelated, respond that you are a demo and cannot do that.
 
-Besides getting prices of cryptocurrencies, you can also chat with users.
+Besides providing prices and facts, you can also chat with users.
 `;
 
 export async function sendMessage(message: string): Promise<{
-  id: number,
-  role: 'user' | 'assistant',
+  id: number;
+  role: 'user' | 'assistant';
   display: ReactNode;
 }> {
 
@@ -79,7 +60,7 @@ export async function sendMessage(message: string): Promise<{
       {
         role: 'system',
         content,
-        toolInvocations: []
+        toolInvocations: [],
       },
       ...history.get(),
     ] as CoreMessage[],
@@ -94,125 +75,123 @@ export async function sendMessage(message: string): Promise<{
       return <BotMessage>{content}</BotMessage>;
     },
     tools: {
-      get_crypto_price: {
-        description:
-          "Get the current price of a given cryptocurrency. Use this to show the price to the user.",
+      get_product_price: {
+        description: "Get the current price of a given grocery product. Use this to show the price to the user.",
         parameters: z.object({
-          symbol: z
-            .string()
-            .describe("The name or symbol of the cryptocurrency. e.g. BTC/ETH/SOL.")
+          storeName: z.string().describe("The name of the supermarket. e.g. checkers/shoprite/pnp/balmoral."),
+          productName: z.string().describe("The name of the product. e.g. Apple/Banana/Bread.")
         }),
-        generate: async function* ({ symbol }: { symbol: string; }) {
+        generate: async function* ({ storeName, productName }: { storeName: string, productName: string; }) {
           yield (
             <BotCard>
               <PriceSkeleton />
             </BotCard>
           );
 
-          const stats = await binance.get24hrChangeStatististics({ symbol: `${symbol}USDT` });
-          // get the last price
-          const price = Number(stats.lastPrice);
-          // extract the delta
-          const delta = Number(stats.priceChange);
+          // Fetch price from the API server
+          try {
+            const response = await fetch(`http://localhost:8000/${storeName}/${productName}`);
+            
+            if (!response.ok) {
+              throw new Error('Failed to fetch product price.');
+            }
 
-          await sleep(1000);
+            const products = await response.json();
 
-          history.done([
-            ...history.get(),
-            {
-              role: 'assistant',
-              name: 'get_crypto_price',
-              content: `[Price of ${symbol} = ${price}]`,
-            },
-          ]);
+            if (products.length === 0) {
+              return <BotMessage>No products found!</BotMessage>;
+            }
 
-          return (
-            <BotCard>
-              <Price name={symbol} price={price} delta={delta} />
-            </BotCard>
-          );
+            const product = products[0]; // Assuming the first product is the one we want
+
+            const price = parseFloat(product.price.replace(/[^\d.]/g, '')); // Remove any non-numeric characters
+            const image = product.img || 'https://via.placeholder.com/100'; // Use a placeholder if image is not available
+            const delta = 0; // Assuming delta as a placeholder value for now
+
+            await sleep(1000);
+
+            history.done([
+              ...history.get(),
+              {
+                role: 'assistant',
+                name: 'get_product_price',
+                content: `[Price of ${productName} at ${storeName} = ${product.price}]`,
+              },
+            ]);
+
+            return (
+              <BotCard>
+                <Price name={productName} price={price} image={image} delta={delta} supermarket={storeName} />
+              </BotCard>
+            );
+          } catch (error) {
+            console.error(error);
+            return <BotMessage>Error fetching product price!</BotMessage>;
+          }
         },
       },
-      get_crypto_stats: {
-        description:
-          "Get the current stats of a given cryptocurrency. Use this to show the stats to the user.",
+      get_product_facts: {
+        description: "Get facts about a given grocery product. Use this to show the product facts to the user.",
         parameters: z.object({
-          slug: z
-            .string()
-            .describe("The full name of the cryptocurrency in lowercase. e.g. bitcoin/ethereum/solana.")
+          productCode: z.string().describe("The barcode or identifier of the product.")
         }),
-        generate: async function* ({ slug }: { slug: string; }) {
+        generate: async function* ({ productCode }: { productCode: string; }) {
           yield (
             <BotCard>
-              <StatsSkeleton />
+              <ProductFactsSkeleton />
             </BotCard>
           );
 
-          const url = new URL("https://api.coinmarketcap.com/data-api/v3/cryptocurrency/detail");
+          // Fetch product facts from the Open Food Facts API
+          const url = `https://world.openfoodfacts.org/api/v0/product/${productCode}.json`;
 
-          // set the query params which are required
-          url.searchParams.append("slug", slug);
-          url.searchParams.append("limit", "1");
-          url.searchParams.append("sortBy", "market_cap");
+          try {
+            const response = await fetch(url, {
+              headers: {
+                Accept: "application/json",
+                "Content-Type": "application/json",
+              }
+            });
 
-          const response = await fetch(url, {
-            headers: {
-              // set the headers
-              Accept: "application/json",
-              "Content-Type": "application/json",
-              "X-CMC_PRO_API_KEY": env.CMC_API_KEY,
+            if (!response.ok) {
+              return <BotMessage>Product not found!</BotMessage>;
             }
-          });
 
-          if (!response.ok) {
-            return <BotMessage>Crypto not found!</BotMessage>;
-          }
+            const res = await response.json();
 
-          const res = await response.json() as {
-            data: {
-              id: number;
-              name: string;
-              symbol: string;
-              volume: number;
-              volumeChangePercentage24h: number;
-              statistics: {
-                rank: number;
-                totalSupply: number;
-                marketCap: number;
-                marketCapDominance: number;
-              },
+            if (!res.product) {
+              return <BotMessage>Product not found!</BotMessage>;
+            }
+
+            const product = res.product;
+            const facts = {
+              name: product.product_name || "Unknown Product",
+              brand: product.brands || "Unknown Brand",
+              categories: product.categories || "Unknown Categories",
+              ingredients: product.ingredients_text || "No ingredients listed",
+              nutriscore: product.nutriscore_grade || "Not available",
             };
-          };
 
-          const data = res.data;
-          const stats = res.data.statistics;
+            await sleep(1000);
 
-          const marketStats = {
-            name: data.name,
-            volume: data.volume,
-            volumeChangePercentage24h: data.volumeChangePercentage24h,
-            rank: stats.rank,
-            marketCap: stats.marketCap,
-            totalSupply: stats.totalSupply,
-            dominance: stats.marketCapDominance,
-          };
+            history.done([
+              ...history.get(),
+              {
+                role: 'assistant',
+                name: 'get_product_facts',
+                content: `[Facts about ${facts.name}]`,
+              },
+            ]);
 
-          await sleep(1000);
-
-          history.done([
-            ...history.get(),
-            {
-              role: 'assistant',
-              name: 'get_crypto_price',
-              content: `[Stats of ${data.symbol}]`,
-            },
-          ]);
-
-          return (
-            <BotCard>
-              <Stats {...marketStats} />
-            </BotCard>
-          );
+            return (
+              <BotCard>
+                <ProductFacts {...facts} />
+              </BotCard>
+            );
+          } catch (error) {
+            console.error(error);
+            return <BotMessage>Error fetching product facts!</BotMessage>;
+          }
         },
       }
     },
@@ -225,10 +204,11 @@ export async function sendMessage(message: string): Promise<{
     display: reply.value,
   };
 };
+
 // Define the AI state and UI state types
 export type AIState = Array<{
   id?: number;
-  name?: 'get_crypto_price' | 'get_crypto_stats';
+  name?: 'get_product_price' | 'get_product_facts';
   role: 'user' | 'assistant' | 'system';
   content: string;
 }>;
